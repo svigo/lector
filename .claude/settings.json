@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f CONTEXTO.md ] && echo '---CONTEXTO DEL PROYECTO---' && cat CONTEXTO.md && echo '---FIN CONTEXTO---' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
