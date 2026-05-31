@@ -12,7 +12,7 @@ from PyQt6.QtGui import (
 )
 
 from src.search import simple_search, fuzzy_search, or_search, proximity_search
-from src.translation import translate_en_es, get_images
+from src.translation import translate_en_es, get_images, correct_word
 
 # Highlight colors
 COLORS = {
@@ -201,7 +201,7 @@ class SearchBar(QWidget):
 # ---------------------------------------------------------------------------
 
 class _LoadingWorker(QObject):
-    done = pyqtSignal(str, list)  # translation, [image_bytes]
+    done = pyqtSignal(str, list, str)  # translation, [image_bytes], corrected_word
 
     def __init__(self, word: str, api_key: str):
         super().__init__()
@@ -209,24 +209,32 @@ class _LoadingWorker(QObject):
         self.api_key = api_key
 
     def run(self):
-        translation = translate_en_es(self.word)
-        images = get_images(self.word, self.api_key)
-        self.done.emit(translation, images)
+        corrected = correct_word(self.word)
+        translation = translate_en_es(corrected)
+        images = get_images(corrected, self.api_key)
+        self.done.emit(translation, images, corrected)
 
 
 class TranslationDialog(QDialog):
     def __init__(self, word: str, api_key: str, parent=None):
         super().__init__(parent)
+        self._original_word = word
         self.setWindowTitle(f'"{word}"')
         self.setMinimumWidth(520)
         self._thread = None
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(8)
 
         lbl_word = QLabel(f'<h3 style="margin:0">{word}</h3>')
         lbl_word.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl_word)
+
+        self.lbl_correction = QLabel('')
+        self.lbl_correction.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_correction.setStyleSheet('font-size: 12px; color: #888; font-style: italic;')
+        self.lbl_correction.hide()
+        layout.addWidget(self.lbl_correction)
 
         self.lbl_translation = QLabel('<i>Traduciendo...</i>')
         self.lbl_translation.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -255,7 +263,10 @@ class TranslationDialog(QDialog):
         self._worker.done.connect(self._thread.quit)
         self._thread.start()
 
-    def _on_loaded(self, translation: str, images: list):
+    def _on_loaded(self, translation: str, images: list, corrected: str):
+        if corrected != self._original_word.lower():
+            self.lbl_correction.setText(f'typo corregido → {corrected}')
+            self.lbl_correction.show()
         self.lbl_translation.setText(f'<b style="font-size:18px">→ {translation}</b>')
         for i, data in enumerate(images[:3]):
             if data:

@@ -1,3 +1,4 @@
 PyQt6>=6.4.0
 requests>=2.28.0
 pytest>=7.0.0
+pyspellchecker>=0.7.0
