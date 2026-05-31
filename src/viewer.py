@@ -344,19 +344,21 @@ class LectorWindow(QMainWindow):
 
         layout.addStretch()
 
-        layout.addWidget(QLabel('Auto-scroll:'))
-
-        self.btn_autoscroll = QPushButton('▶ Iniciar')
+        self.btn_autoscroll = QPushButton('▶ Auto-scroll')
         self.btn_autoscroll.setCheckable(True)
         self.btn_autoscroll.clicked.connect(self._toggle_autoscroll)
         layout.addWidget(self.btn_autoscroll)
 
-        layout.addWidget(QLabel('Vel:'))
+        self.lbl_vel = QLabel('Vel:')
+        self.lbl_vel.hide()
+        layout.addWidget(self.lbl_vel)
+
         self.speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.speed_slider.setRange(1, 10)
         self.speed_slider.setValue(3)
         self.speed_slider.setFixedWidth(110)
         self.speed_slider.valueChanged.connect(self._update_autoscroll_speed)
+        self.speed_slider.hide()
         layout.addWidget(self.speed_slider)
 
         return bar
@@ -395,15 +397,14 @@ class LectorWindow(QMainWindow):
 
     def _set_text(self, text: str):
         self.text_edit.setPlainText(text)
-        # Apply line height after setting text
-        doc = self.text_edit.document()
         from PyQt6.QtGui import QTextBlockFormat
+        doc = self.text_edit.document()
         cursor = QTextCursor(doc)
         cursor.select(QTextCursor.SelectionType.Document)
         block_fmt = QTextBlockFormat()
-        block_fmt.setLineHeight(160, QTextBlockFormat.LineHeightTypes.ProportionalHeight)
+        block_fmt.setLineHeight(160, 1)  # 1 = ProportionalHeight
         cursor.setBlockFormat(block_fmt)
-        cursor.clearSelection()
+        cursor.setPosition(0)
         self.text_edit.setTextCursor(cursor)
 
     # ------------------------------------------------------------------
@@ -501,16 +502,19 @@ class LectorWindow(QMainWindow):
     def _toggle_autoscroll(self, checked: bool):
         if checked:
             self.btn_autoscroll.setText('⏸ Pausar')
+            self.lbl_vel.show()
+            self.speed_slider.show()
             self._update_autoscroll_speed()
             self._autoscroll_timer.start()
         else:
-            self.btn_autoscroll.setText('▶ Iniciar')
+            self.btn_autoscroll.setText('▶ Auto-scroll')
+            self.lbl_vel.hide()
+            self.speed_slider.hide()
             self._autoscroll_timer.stop()
 
     def _update_autoscroll_speed(self):
         interval, _ = SPEED_PARAMS[self.speed_slider.value()]
-        if self._autoscroll_timer.isActive():
-            self._autoscroll_timer.setInterval(interval)
+        self._autoscroll_timer.setInterval(interval)
 
     def _do_autoscroll(self):
         _, pixels = SPEED_PARAMS[self.speed_slider.value()]
