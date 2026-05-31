@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QComboBox, QSpinBox,
     QSlider, QDialog, QFileDialog, QMenu, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, QObject, QEvent, pyqtSignal
 from PyQt6.QtGui import (
     QTextCharFormat, QColor, QTextCursor, QFont,
     QKeySequence, QShortcut, QPainter, QPixmap,
@@ -76,8 +76,8 @@ class MarkerBar(QWidget):
         painter.fillRect(self.rect(), QColor('#E8E8E8'))
         h = self.height()
         for ratio, color in self._markers:
-            y = int(ratio * h)
-            painter.fillRect(0, max(0, y - 1), self.width(), 3, color)
+            y = max(1, min(h - 2, int(ratio * h)))
+            painter.fillRect(0, y - 1, self.width(), 3, color)
         painter.end()
 
 
@@ -112,12 +112,14 @@ class SearchBar(QWidget):
         self.input_a.setPlaceholderText('Buscar...')
         self.input_a.returnPressed.connect(self._handle_enter)
         self.input_a.textChanged.connect(self._reset_last_params)
+        self.input_a.installEventFilter(self)
         layout.addWidget(self.input_a)
 
         self.input_b = QLineEdit()
         self.input_b.setPlaceholderText('Segundo término...')
         self.input_b.returnPressed.connect(self._handle_enter)
         self.input_b.textChanged.connect(self._reset_last_params)
+        self.input_b.installEventFilter(self)
         self.input_b.hide()
         layout.addWidget(self.input_b)
 
@@ -183,6 +185,26 @@ class SearchBar(QWidget):
         else:
             self._last_params = params
             self.search_requested.emit(params)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress:
+            two_field = self.mode_combo.currentText() in ('Proximidad', 'OR')
+            if event.key() == Qt.Key.Key_Tab:
+                if obj is self.input_a and two_field:
+                    self.input_b.setFocus()
+                else:
+                    self._cycle_mode(+1)
+                    self.input_a.setFocus()
+                return True
+            if event.key() == Qt.Key.Key_Backtab:
+                self._cycle_mode(-1)
+                self.input_a.setFocus()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _cycle_mode(self, direction: int):
+        n = self.mode_combo.count()
+        self.mode_combo.setCurrentIndex((self.mode_combo.currentIndex() + direction) % n)
 
     def show_bar(self):
         self.show()
@@ -301,6 +323,7 @@ class LectorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self._matches = []
+        self._nav_matches = []  # matches usados para navegación y contador
         self._current_idx = -1
         self._pixabay_key = os.environ.get('PIXABAY_API_KEY', '')
         self._autoscroll_timer = QTimer()
@@ -396,8 +419,27 @@ class LectorWindow(QMainWindow):
         self.text_edit.document().setDocumentMargin(60)
 
     def _setup_shortcuts(self):
-        QShortcut(QKeySequence('Ctrl+F'), self, self._open_search)
-        QShortcut(QKeySequence('Escape'), self, self._close_search)
+        QShortcut(QKeySequence('Ctrl+O'),     self, self._open_file)
+        QShortcut(QKeySequence('Ctrl+F'),     self, self._open_search)
+        QShortcut(QKeySequence('Escape'),     self, self._close_search)
+        QShortcut(QKeySequence('F3'),         self, lambda: self._navigate(1))
+        QShortcut(QKeySequence('Shift+F3'),   self, lambda: self._navigate(-1))
+        QShortcut(QKeySequence('Ctrl+Space'), self, self._toggle_autoscroll_key)
+        QShortcut(QKeySequence('+'),          self, self._speed_up)
+        QShortcut(QKeySequence('-'),          self, self._speed_down)
+
+    def _toggle_autoscroll_key(self):
+        checked = not self.btn_autoscroll.isChecked()
+        self.btn_autoscroll.setChecked(checked)
+        self._toggle_autoscroll(checked)
+
+    def _speed_up(self):
+        if self.btn_autoscroll.isChecked():
+            self.speed_slider.setValue(min(10, self.speed_slider.value() + 1))
+
+    def _speed_down(self):
+        if self.btn_autoscroll.isChecked():
+            self.speed_slider.setValue(max(1, self.speed_slider.value() - 1))
 
     # ------------------------------------------------------------------
     # File loading
@@ -438,6 +480,7 @@ class LectorWindow(QMainWindow):
         self.text_edit.setExtraSelections([])
         self.marker_bar.clear_markers()
         self._matches = []
+        self._nav_matches = []
         self._current_idx = -1
 
     def _on_search(self, params: dict):
@@ -454,46 +497,53 @@ class LectorWindow(QMainWindow):
         elif mode == 'Proximidad':
             self._matches = proximity_search(text, a, b, n)
 
-        self._current_idx = 0 if self._matches else -1
-        self._apply_highlights()
-        self.marker_bar.set_markers(self._matches, len(text))
+        # En proximidad navegamos solo por los 'a' (uno por par)
+        if mode == 'Proximidad':
+            self._nav_matches = [m for m in self._matches if m.label == 'a']
+        else:
+            self._nav_matches = self._matches
 
-        if self._matches:
+        self._current_idx = 0 if self._nav_matches else -1
+        self._apply_highlights()
+        self.marker_bar.set_markers(self._nav_matches, len(text))
+
+        if self._nav_matches:
             self._scroll_to(0)
 
         self.search_bar.set_count(
-            self._current_idx + 1 if self._matches else 0,
-            len(self._matches),
+            self._current_idx + 1 if self._nav_matches else 0,
+            len(self._nav_matches),
         )
 
     def _apply_highlights(self):
+        nav_start = self._nav_matches[self._current_idx].start if 0 <= self._current_idx < len(self._nav_matches) else -1
         selections = []
-        for i, m in enumerate(self._matches):
+        for m in self._matches:
             sel = QTextEdit.ExtraSelection()
             sel.cursor = QTextCursor(self.text_edit.document())
             sel.cursor.setPosition(m.start)
             sel.cursor.setPosition(m.end, QTextCursor.MoveMode.KeepAnchor)
             sel.format = QTextCharFormat()
-            color = COLORS['current'] if i == self._current_idx else COLORS.get(m.label, COLORS['match'])
+            color = COLORS['current'] if m.start == nav_start else COLORS.get(m.label, COLORS['match'])
             sel.format.setBackground(color)
             selections.append(sel)
         self.text_edit.setExtraSelections(selections)
 
     def _scroll_to(self, idx: int):
-        if not self._matches or not (0 <= idx < len(self._matches)):
+        if not self._nav_matches or not (0 <= idx < len(self._nav_matches)):
             return
         self._current_idx = idx
         self._apply_highlights()
         cursor = QTextCursor(self.text_edit.document())
-        cursor.setPosition(self._matches[idx].start)
+        cursor.setPosition(self._nav_matches[idx].start)
         self.text_edit.setTextCursor(cursor)
         self.text_edit.ensureCursorVisible()
-        self.search_bar.set_count(idx + 1, len(self._matches))
+        self.search_bar.set_count(idx + 1, len(self._nav_matches))
 
     def _navigate(self, direction: int):
-        if not self._matches:
+        if not self._nav_matches:
             return
-        self._scroll_to((self._current_idx + direction) % len(self._matches))
+        self._scroll_to((self._current_idx + direction) % len(self._nav_matches))
 
     # ------------------------------------------------------------------
     # Right-click translation
