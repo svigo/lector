@@ -1,4 +1,5 @@
 import os
+import re
 from PyQt6.QtWidgets import (
     QMainWindow, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QComboBox, QSpinBox,
@@ -274,6 +275,13 @@ class TranslationDialog(QDialog):
                 self.img_labels[i].setText('(sin imagen)')
 
 
+def _reflow(text: str) -> str:
+    """Join hard-wrapped lines: only keep newlines after sentence-ending punctuation."""
+    text = re.sub(r'\n[ \t]*\n', '\x00', text)         # preservar párrafos (línea en blanco)
+    text = re.sub(r'([^.?!\n]) *\n *', r'\1 ', text)   # unir líneas consumiendo espacios al rededor del salto
+    return text.replace('\x00', '\n\n')
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -396,7 +404,7 @@ class LectorWindow(QMainWindow):
             self._close_search()
 
     def _set_text(self, text: str):
-        self.text_edit.setPlainText(text)
+        self.text_edit.setPlainText(_reflow(text))
         from PyQt6.QtGui import QTextBlockFormat
         doc = self.text_edit.document()
         cursor = QTextCursor(doc)
