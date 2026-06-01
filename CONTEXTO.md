@@ -60,10 +60,17 @@ lector/
 - Carga asíncrona (QThread)
 
 ### Auto-scroll
-- `Ctrl+Space` activa/pausa
+- `Ctrl+Space` activa/desactiva por completo
+- `Space` (sola) pausa/reanuda el auto-scroll **solo si ya está activo** (botón alterna "⏸ Pausar" / "▶ Reanudar (Espacio)"); el slider queda visible mientras está pausado
 - Al activar aparece slider de velocidad 1–10
 - `+` / `-` ajustan velocidad (solo cuando activo)
 - Se detiene al llegar al final
+
+### Teclas globales (foco-agnósticas)
+Implementadas con un `eventFilter` a nivel de `QApplication` (guardado con `isActiveWindow()` para no interferir con diálogos modales):
+- `↑` / `↓` scrollean el texto una línea por pulsación **sin importar el foco**, salvo cuando el foco está en el combo de modo o el spinbox `n` (ahí conservan su navegación nativa)
+- `Enter` va al siguiente match si hay búsqueda activa; dentro de los inputs de búsqueda se mantiene el `returnPressed` (1er Enter busca, siguientes navegan)
+- `Space` pausa/reanuda auto-scroll (ver arriba)
 
 ### Atajos completos
 | Atajo | Acción |
@@ -73,7 +80,10 @@ lector/
 | `Escape` | Cerrar búsqueda |
 | `F3` | Siguiente match |
 | `Shift+F3` | Match anterior |
-| `Ctrl+Space` | Activar/pausar auto-scroll |
+| `Enter` | Siguiente match (foco-agnóstico, si hay búsqueda activa) |
+| `↑` / `↓` | Scrollear texto (foco-agnóstico) |
+| `Ctrl+Space` | Activar/desactivar auto-scroll |
+| `Space` | Pausar/reanudar auto-scroll (solo si está activo) |
 | `+` / `-` | Velocidad auto-scroll (solo activo) |
 | `Tab` | Ciclar modo de búsqueda |
 
@@ -103,6 +113,7 @@ tail -f /tmp/lector.log
 - `proximity_search`: gap = fin del primero al inicio del segundo, estrictamente < n. Navegación por pares (label='a'), highlights muestran ambos términos.
 - `_nav_matches` separa los matches navegables de los highlights (relevante en Proximidad).
 - `setExtraSelections` para highlights — no corrompe el documento al limpiar.
+- Teclas globales vía `eventFilter` en `QApplication` (instalado en `__init__`). `_scroll_lines` usa `fontMetrics().height()` como paso. `_toggle_autoscroll_pause` devuelve `True` solo si el auto-scroll está activo (botón checked), distinguiendo pausa (timer parado, botón sigue checked) de desactivación (`Ctrl+Space`).
 - `PIXABAY_API_KEY` en `~/.profile` (no en `.bashrc` que tiene guard de shell interactivo).
 - Lanzador en `~/Escritorio/lector.desktop`.
 - `reflow_stories.py` ya procesó 10543 historias en `/proyectos/machinelearning/stories/resto/`.
