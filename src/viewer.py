@@ -330,6 +330,8 @@ class LectorWindow(QMainWindow):
         self._autoscroll_timer.timeout.connect(self._do_autoscroll)
         self._setup_ui()
         self._setup_shortcuts()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().installEventFilter(self)
 
     # ------------------------------------------------------------------
     # UI setup
@@ -440,6 +442,54 @@ class LectorWindow(QMainWindow):
     def _speed_down(self):
         if self.btn_autoscroll.isChecked():
             self.speed_slider.setValue(max(1, self.speed_slider.value() - 1))
+
+    # ------------------------------------------------------------------
+    # Teclas globales (foco-agnósticas)
+    # ------------------------------------------------------------------
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress and self.isActiveWindow():
+            key = event.key()
+            mods = event.modifiers()
+            no_mod = mods == Qt.KeyboardModifier.NoModifier
+
+            # ↑/↓ scrollean el texto, salvo si el foco está en el combo de modo
+            # o el spinbox n (que usan las flechas para su propia navegación).
+            if no_mod and key in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                if obj not in (self.search_bar.mode_combo, self.search_bar.spin_n):
+                    self._scroll_lines(-1 if key == Qt.Key.Key_Up else 1)
+                    return True
+
+            # Espacio: pausa/reanuda el auto-scroll solo si ya está activo.
+            if no_mod and key == Qt.Key.Key_Space:
+                if self._toggle_autoscroll_pause():
+                    return True
+
+            # Enter: siguiente match (si hay búsqueda activa). Dentro de los
+            # inputs de búsqueda se mantiene el comportamiento de returnPressed.
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if obj not in (self.search_bar.input_a, self.search_bar.input_b):
+                    if self._nav_matches:
+                        self._navigate(1)
+                        return True
+        return super().eventFilter(obj, event)
+
+    def _scroll_lines(self, direction: int):
+        sb = self.text_edit.verticalScrollBar()
+        line_px = self.text_edit.fontMetrics().height()
+        sb.setValue(sb.value() + direction * line_px)
+
+    def _toggle_autoscroll_pause(self) -> bool:
+        """Pausa/reanuda el auto-scroll activo. Devuelve True si lo manejó."""
+        if not self.btn_autoscroll.isChecked():
+            return False
+        if self._autoscroll_timer.isActive():
+            self._autoscroll_timer.stop()
+            self.btn_autoscroll.setText('▶ Reanudar (Espacio)')
+        else:
+            self._autoscroll_timer.start()
+            self.btn_autoscroll.setText('⏸ Pausar')
+        return True
 
     # ------------------------------------------------------------------
     # File loading
