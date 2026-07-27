@@ -3,7 +3,7 @@ import re
 from PyQt6.QtWidgets import (
     QMainWindow, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QComboBox, QSpinBox,
-    QSlider, QDialog, QFileDialog, QMenu, QSizePolicy,
+    QSlider, QDialog, QFileDialog, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, QObject, QEvent, pyqtSignal
 from PyQt6.QtGui import (
@@ -12,7 +12,7 @@ from PyQt6.QtGui import (
 )
 
 from src.search import simple_search, fuzzy_search, or_search, proximity_search
-from src.translation import translate_en_es, get_images, correct_word
+from src.translation import translate_en_es, get_images, correct_word, get_slang_definition
 
 # Highlight colors
 COLORS = {
@@ -135,12 +135,12 @@ class SearchBar(QWidget):
 
         self.btn_prev = QPushButton('◀')
         self.btn_prev.setFixedWidth(28)
-        self.btn_prev.clicked.connect(lambda: self.navigate.emit(-1))
+        self.btn_prev.clicked.connect(lambda: self._handle_nav(-1))
         layout.addWidget(self.btn_prev)
 
         self.btn_next = QPushButton('▶')
         self.btn_next.setFixedWidth(28)
-        self.btn_next.clicked.connect(lambda: self.navigate.emit(1))
+        self.btn_next.clicked.connect(lambda: self._handle_nav(1))
         layout.addWidget(self.btn_next)
 
         self.lbl_count = QLabel('')
@@ -179,9 +179,12 @@ class SearchBar(QWidget):
         }
 
     def _handle_enter(self):
+        self._handle_nav(1)
+
+    def _handle_nav(self, direction: int):
         params = self._collect_params()
         if params == self._last_params:
-            self.navigate.emit(1)
+            self.navigate.emit(direction)
         else:
             self._last_params = params
             self.search_requested.emit(params)
@@ -223,7 +226,9 @@ class SearchBar(QWidget):
 # ---------------------------------------------------------------------------
 
 class _LoadingWorker(QObject):
-    done = pyqtSignal(str, list, str)  # translation, [image_bytes], corrected_word
+    translated = pyqtSignal(str, str)  # translation, corrected_word
+    slang_done = pyqtSignal(str)       # definición de Urban Dictionary (o "")
+    images_done = pyqtSignal(list)     # [image_bytes]
 
     def __init__(self, word: str, api_key: str):
         super().__init__()
@@ -233,8 +238,11 @@ class _LoadingWorker(QObject):
     def run(self):
         corrected = correct_word(self.word)
         translation = translate_en_es(corrected)
+        self.translated.emit(translation, corrected)
+        slang = get_slang_definition(corrected)
+        self.slang_done.emit(slang)
         images = get_images(corrected, self.api_key)
-        self.done.emit(translation, images, corrected)
+        self.images_done.emit(images)
 
 
 class TranslationDialog(QDialog):
@@ -263,6 +271,13 @@ class TranslationDialog(QDialog):
         self.lbl_translation.setStyleSheet('font-size: 16px; color: #333;')
         layout.addWidget(self.lbl_translation)
 
+        self.lbl_slang = QLabel('')
+        self.lbl_slang.setWordWrap(True)
+        self.lbl_slang.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_slang.setStyleSheet('font-size: 12px; color: #666;')
+        self.lbl_slang.hide()
+        layout.addWidget(self.lbl_slang)
+
         img_row = QHBoxLayout()
         self.img_labels: list[QLabel] = []
         for _ in range(3):
@@ -281,15 +296,24 @@ class TranslationDialog(QDialog):
         self._worker = _LoadingWorker(word, api_key)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
-        self._worker.done.connect(self._on_loaded)
-        self._worker.done.connect(self._thread.quit)
+        self._worker.translated.connect(self._on_translated)
+        self._worker.slang_done.connect(self._on_slang)
+        self._worker.images_done.connect(self._on_images)
+        self._worker.images_done.connect(self._thread.quit)
         self._thread.start()
 
-    def _on_loaded(self, translation: str, images: list, corrected: str):
+    def _on_translated(self, translation: str, corrected: str):
         if corrected != self._original_word.lower():
             self.lbl_correction.setText(f'typo corregido → {corrected}')
             self.lbl_correction.show()
         self.lbl_translation.setText(f'<b style="font-size:18px">→ {translation}</b>')
+
+    def _on_slang(self, definition: str):
+        if definition:
+            self.lbl_slang.setText(f'<i>Slang (Urban Dictionary):</i> {definition}')
+            self.lbl_slang.show()
+
+    def _on_images(self, images: list):
         for i, data in enumerate(images[:3]):
             if data:
                 px = QPixmap()
@@ -421,6 +445,7 @@ class LectorWindow(QMainWindow):
         self.text_edit.document().setDocumentMargin(60)
 
     def _setup_shortcuts(self):
+        QShortcut(QKeySequence('Ctrl+C'),     self, self.text_edit.copy)
         QShortcut(QKeySequence('Ctrl+O'),     self, self._open_file)
         QShortcut(QKeySequence('Ctrl+F'),     self, self._open_search)
         QShortcut(QKeySequence('Escape'),     self, self._close_search)
@@ -600,15 +625,16 @@ class LectorWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_right_click(self, pos):
-        cursor = self.text_edit.cursorForPosition(pos)
-        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
-        word = cursor.selectedText().strip()
-        if not word:
+        cursor = self.text_edit.textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText().replace(' ', ' ').strip()
+        else:
+            cursor = self.text_edit.cursorForPosition(pos)
+            cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+            text = cursor.selectedText().strip()
+        if not text:
             return
-        menu = QMenu(self)
-        action = menu.addAction(f'Traducir "{word}"')
-        action.triggered.connect(lambda: self._translate(word))
-        menu.exec(self.text_edit.mapToGlobal(pos))
+        self._translate(text)
 
     def _translate(self, word: str):
         dlg = TranslationDialog(word, self._pixabay_key, self)

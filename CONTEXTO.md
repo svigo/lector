@@ -50,14 +50,19 @@ lector/
 - Match actual en rojo; resto: amarillo/azul/naranja según tipo
 - Barra de marcadores (10px) a la derecha — clampeada para no perderse en bordes
 - Enter: busca / Enter siguiente: navega al próximo match
+- Botones ◀/▶: si el término cambió desde la última búsqueda, buscan de nuevo; si no cambió, navegan (misma lógica que Enter, unificada en `_handle_nav`)
 - F3 / Shift+F3: siguiente / anterior match
 - ✕ o Escape cierra y limpia
+- `Ctrl+C` copia la selección del texto al portapapeles
 
 ### Traducción
-- Click derecho → "Traducir"
-- Spell correction antes de traducir e imágenes
-- Popup: palabra original, nota "typo corregido → X" si hubo corrección, traducción ES, 3 imágenes
-- Carga asíncrona (QThread)
+- Click derecho traduce directo (sin menú, ya no hay más de una opción)
+- Si hay una frase seleccionada, traduce la selección completa; si no, la palabra bajo el cursor
+- Spell correction antes de traducir e imágenes (solo aplica a palabra suelta; en frases no encuentra corrección y devuelve la frase intacta)
+- Traducción: MyMemory primero, si no da resultado usable cae a Lingva (mirror de Google Translate, sin API key)
+- Slang: definición de Urban Dictionary (sin API key), se muestra solo si hay resultado — útil para términos que MyMemory/Lingva no manejan bien
+- Popup: palabra original, nota "typo corregido → X" si hubo corrección, traducción ES aparece apenas llega (no espera al resto), definición de slang después, 3 imágenes al final (lo más lento)
+- Carga asíncrona (QThread) — `_LoadingWorker` emite en orden `translated` → `slang_done` → `images_done`, cada uno actualiza su parte de la UI sin bloquear a los demás
 
 ### Auto-scroll
 - `Ctrl+Space` activa/desactiva por completo
@@ -115,5 +120,6 @@ tail -f /tmp/lector.log
 - `setExtraSelections` para highlights — no corrompe el documento al limpiar.
 - Teclas globales vía `eventFilter` en `QApplication` (instalado en `__init__`). `_scroll_lines` usa `fontMetrics().height()` como paso. `_toggle_autoscroll_pause` devuelve `True` solo si el auto-scroll está activo (botón checked), distinguiendo pausa (timer parado, botón sigue checked) de desactivación (`Ctrl+Space`).
 - `PIXABAY_API_KEY` en `~/.profile` (no en `.bashrc` que tiene guard de shell interactivo).
+- Fix: los botones ◀/▶ antes navegaban matches viejos aunque el término de búsqueda hubiera cambiado (solo Enter re-buscaba). Ahora `SearchBar._handle_nav(direction)` centraliza la lógica de "¿cambió el término? buscar : navegar" para Enter y ambos botones.
 - Lanzador en `~/Escritorio/lector.desktop`.
 - `reflow_stories.py` ya procesó 10543 historias en `/proyectos/machinelearning/stories/resto/`.

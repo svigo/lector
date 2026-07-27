@@ -6,8 +6,10 @@ from typing import List
 _spell = SpellChecker()
 
 MYMEMORY_URL = "https://api.mymemory.translated.net/get"
+LINGVA_URL = "https://lingva.ml/api/v1/en/es/{}"
 PIXABAY_URL = "https://pixabay.com/api/"
 WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+URBAN_DICTIONARY_URL = "https://api.urbandictionary.com/v0/define"
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -20,13 +22,41 @@ logging.basicConfig(
 log = logging.getLogger("lector.translation")
 
 
-def translate_en_es(word: str) -> str:
+def _translate_mymemory(word: str) -> str:
     try:
         r = requests.get(MYMEMORY_URL, params={"q": word, "langpair": "en|es"}, timeout=5)
         r.raise_for_status()
-        return r.json()["responseData"]["translatedText"]
-    except Exception:
-        return "(error al traducir)"
+        text = r.json()["responseData"]["translatedText"].strip()
+        if not text or text.upper().startswith(("NO QUERY", "MYMEMORY WARNING")):
+            return ""
+        if text.lower() == word.strip().lower():
+            return ""
+        return text
+    except Exception as e:
+        log.error("MyMemory: error traduciendo '%s': %s", word, e)
+        return ""
+
+
+def _translate_lingva(word: str) -> str:
+    try:
+        r = requests.get(LINGVA_URL.format(requests.utils.quote(word)), headers=HEADERS, timeout=5)
+        r.raise_for_status()
+        return r.json().get("translation", "").strip()
+    except Exception as e:
+        log.error("Lingva: error traduciendo '%s': %s", word, e)
+        return ""
+
+
+def translate_en_es(word: str) -> str:
+    """Traduce probando MyMemory primero; si no hay resultado usable, cae a Lingva."""
+    translation = _translate_mymemory(word)
+    if translation:
+        return translation
+    log.debug("MyMemory sin resultado usable para '%s', probando Lingva", word)
+    translation = _translate_lingva(word)
+    if translation:
+        return translation
+    return "(error al traducir)"
 
 
 HEADERS = {"User-Agent": "lector/1.0 (text reader app; piscucho@gmail.com)"}
@@ -92,6 +122,23 @@ def _get_images_pixabay(word: str, api_key: str, count: int = 3) -> List[bytes]:
     except Exception as e:
         log.error("Pixabay: error en búsqueda: %s", e)
         return []
+
+
+def get_slang_definition(word: str) -> str:
+    """Primera definición de Urban Dictionary, sin los corchetes de link. Vacío si no hay."""
+    log.debug("Urban Dictionary: buscando '%s'", word)
+    try:
+        r = requests.get(URBAN_DICTIONARY_URL, params={"term": word}, timeout=5)
+        r.raise_for_status()
+        defs = r.json().get("list", [])
+        if not defs:
+            return ""
+        definition = defs[0].get("definition", "").replace("[", "").replace("]", "").strip()
+        log.debug("Urban Dictionary: definición para '%s': %s", word, definition)
+        return definition
+    except Exception as e:
+        log.error("Urban Dictionary: error buscando '%s': %s", word, e)
+        return ""
 
 
 def correct_word(word: str) -> str:
