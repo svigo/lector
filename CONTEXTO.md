@@ -18,8 +18,32 @@ lector/
 ├── tests/
 │   ├── conftest.py
 │   └── test_search.py       # 29 tests pytest (todos pasando)
+├── story_classifier/        # pipeline del corpus de historias (movido desde machinelearning)
+│   ├── scraper.py           # descarga historias + metadatos → stories.db
+│   ├── build_index.py       # índice invertido de palabras → word_index.db
+│   ├── compute_text_features.py  # features de texto por historia → stories.db
+│   ├── classifier.py        # clustering TF-IDF + KMeans → clasificacion.csv/.pkl
+│   ├── refine.py            # re-clustering de un subconjunto
+│   ├── similarity.py        # similitud TF-IDF entre historias → similarity_cache.pkl
+│   ├── ranker.py            # RANKING: señales + pesos → top N historias
+│   ├── ranker_gui.py        # GUI "Calibrador de Ranking" (Tkinter)
+│   ├── tagger_gui.py        # GUI de etiquetado manual
+│   └── stopwords_fiction.txt
 └── requirements.txt
 ```
+
+## Corpus de historias (`~/corpus-historias/`)
+Los datos **no están en el repo** (~600 MB). Todos los scripts los referencian por ruta
+absoluta con `os.path.expanduser('~/corpus-historias/...')`, así que funcionan desde
+cualquier directorio.
+
+| Archivo | Qué es |
+|---|---|
+| `stories/resto/` | 10543 historias en `.txt` (ya pasadas por `reflow_stories.py`) |
+| `stories.db` | SQLite: metadatos, rating, votos, shelves, features de texto |
+| `word_index.db` | índice invertido para el tagger |
+| `similarity_cache.pkl` | matriz de similitud precomputada |
+| `clasificacion*.csv/.pkl` | salida del clustering |
 
 ## Stack técnico
 - **Python 3.10+** + **PyQt6** — UI de escritorio, estilo gedit
@@ -28,6 +52,10 @@ lector/
 - **Wikipedia API** — fallback de imágenes cuando Pixabay da 0 resultados
 - **pyspellchecker** — corrección de typos antes de traducir y buscar imágenes
 - **pytest** — tests unitarios del módulo de búsqueda
+- **numpy / scipy / scikit-learn / pandas** — pipeline del corpus (TF-IDF, KMeans, similitud)
+- **snowballstemmer** — stemming para el índice de palabras y el tagger
+- **beautifulsoup4** — parseo HTML del scraper
+- **Tkinter** — GUIs del pipeline (`ranker_gui`, `tagger_gui`); el visor es PyQt6
 
 ## Funcionalidades implementadas
 
@@ -77,6 +105,25 @@ Implementadas con un `eventFilter` a nivel de `QApplication` (guardado con `isAc
 - `Enter` va al siguiente match si hay búsqueda activa; dentro de los inputs de búsqueda se mantiene el `returnPressed` (1er Enter busca, siguientes navegan)
 - `Space` pausa/reanuda auto-scroll (ver arriba)
 
+### Ranking de historias (`story_classifier/ranker.py`)
+Ordena el corpus por calidad estimada. Cada señal se normaliza a [0,1] con
+`percentile_rank` y se combina con pesos configurables (score = Σ peso·señal / Σ pesos).
+
+| Señal | Cómo se calcula |
+|---|---|
+| `bayesian` | rating suavizado hacia la media global: `v/(v+10)·r + 10/(v+10)·media` — evita que 1 voto de 10 gane |
+| `engagement` | votos / lectores (se muestra en ‰) |
+| `shelves` | cantidad de estanterías donde fue guardada |
+| `quality` | calidad agregada de las estanterías que la contienen |
+| `longevity` | lectores / años desde la publicación |
+| `length` | word_count |
+| `vocab` | diversidad de vocabulario |
+
+- CLI: `python3 ranker.py --top 20 [--db ...]`
+- GUI: `ranker_gui.py` — sliders para calibrar los pesos en vivo, filtro por similitud
+  (`similarity.py`) y **abre la historia elegida en el lector** (`.venv/bin/python main.py`).
+- `tagger_gui.py` también lanza el lector para leer mientras se etiqueta.
+
 ### Atajos completos
 | Atajo | Acción |
 |---|---|
@@ -109,10 +156,20 @@ export PIXABAY_API_KEY="..."
 tail -f /tmp/lector.log
 ```
 
+### Ranking (mismo venv que el visor)
+```bash
+source .venv/bin/activate
+cd story_classifier
+python ranker.py --top 20     # CLI
+python ranker_gui.py          # GUI de calibración de pesos
+python tagger_gui.py          # GUI de etiquetado
+```
+
 ## Pendientes
 - [ ] Tests de integración para la UI
 - [ ] Soporte para .pdf y .epub
 - [ ] Quitar logging de debug antes de distribución
+- [ ] Commit de la mudanza en ambos repos (borrado ya staged en `machinelearning`)
 
 ## Notas
 - `proximity_search`: gap = fin del primero al inicio del segundo, estrictamente < n. Navegación por pares (label='a'), highlights muestran ambos términos.
@@ -122,4 +179,10 @@ tail -f /tmp/lector.log
 - `PIXABAY_API_KEY` en `~/.profile` (no en `.bashrc` que tiene guard de shell interactivo).
 - Fix: los botones ◀/▶ antes navegaban matches viejos aunque el término de búsqueda hubiera cambiado (solo Enter re-buscaba). Ahora `SearchBar._handle_nav(direction)` centraliza la lógica de "¿cambió el término? buscar : navegar" para Enter y ambos botones.
 - Lanzador en `~/Escritorio/lector.desktop`.
-- `reflow_stories.py` ya procesó 10543 historias en `/proyectos/machinelearning/stories/resto/`.
+- `reflow_stories.py` ya procesó 10543 historias en `~/corpus-historias/stories/resto/`.
+- **Mudanza (2026-08-02)**: `story_classifier/` se movió desde `~/proyectos/machinelearning/`
+  a este proyecto — el corpus es lo que el lector lee y en machinelearning (misceláneo) era
+  un huésped. En machinelearning quedó el borrado staged, sin commitear. La historia git de
+  esos archivos no cruza entre repos: para arqueología, ver `git log` de machinelearning.
+- Los scripts usan rutas absolutas a `~/corpus-historias`, por eso la mudanza no rompió nada
+  (verificado corriendo `ranker.py --top 5` desde la nueva ubicación).
