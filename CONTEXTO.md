@@ -5,6 +5,9 @@ Visor de textos orientado a la lectura (no edición), con búsqueda avanzada, tr
 
 ## Estado del proyecto
 - 🟢 Funcional — todas las features core implementadas y probadas visualmente
+- 🟢 `story_classifier/` incorporado desde `machinelearning` (2026-08-02), corriendo en el
+  mismo venv que el visor
+- 🟢 Ranking por frecuencia de palabras sobre índice invertido — 47 tests pasando
 
 ## Arquitectura
 ```
@@ -26,6 +29,7 @@ lector/
 │   ├── refine.py            # re-clustering de un subconjunto
 │   ├── similarity.py        # similitud TF-IDF entre historias → similarity_cache.pkl
 │   ├── ranker.py            # RANKING: señales + pesos → top N historias
+│   ├── word_rank.py         # ranking/filtro por frecuencia de palabras (sobre el índice)
 │   ├── ranker_gui.py        # GUI "Calibrador de Ranking" (Tkinter)
 │   ├── tagger_gui.py        # GUI de etiquetado manual
 │   └── stopwords_fiction.txt
@@ -41,7 +45,7 @@ cualquier directorio.
 |---|---|
 | `stories/resto/` | 10543 historias en `.txt` (ya pasadas por `reflow_stories.py`) |
 | `stories.db` | SQLite: metadatos, rating, votos, shelves, features de texto |
-| `word_index.db` | índice invertido para el tagger |
+| `word_index.db` | índice invertido, 1073 MB: `word_index` (183k stems), `exact_index` (250k formas literales), `story_totals`, `indexed_stories` |
 | `similarity_cache.pkl` | matriz de similitud precomputada |
 | `clasificacion*.csv/.pkl` | salida del clustering |
 
@@ -120,6 +124,32 @@ Ordena el corpus por calidad estimada. Cada señal se normaliza a [0,1] con
 | `vocab` | diversidad de vocabulario |
 
 - CLI: `python3 ranker.py --top 20 [--db ...]`
+- Los scores del top están **muy comprimidos** (#1 0.9769 vs #3 0.9756): en la cola alta
+  todas las señales normalizadas valen ~1, así que el orden entre los primeros es casi ruido.
+- Los pesos por defecto incluyen `length` y `vocab`, aunque el encabezado que imprime la CLI
+  solo lista cinco — están en el cálculo igual.
+
+### Ranking por frecuencia de palabras (`story_classifier/word_rank.py`)
+Da una palabra (o varias) y ordena las historias por cuántas veces aparece. Todo sale de
+`word_index.db`, no de releer los .txt: **~0,7 s** contra minutos del scan anterior.
+
+| Modo | Tabla | Qué matchea `whip` |
+|---|---|---|
+| stem (default) | `word_index` | whip, whips, whipping, whipped |
+| exacta (`--exact`, checkbox "exacta") | `exact_index` | solo `whip` |
+
+- Varias palabras: exige **todas** (AND) y ordena por la **suma** de ocurrencias.
+- Dos métricas: `hits` (veces absolutas) y `per_1k` (veces por cada 1000 palabras).
+  Cambian mucho el resultado — por veces gana una novela larga que la menciona al pasar;
+  por densidad (`--per-1k`, checkbox "por densidad") ganan las historias centradas en el tema.
+- `story_totals` (tabla del índice) da el total de palabras por historia. No se usa
+  `stories.word_count`: solo está poblado en 3963 de 10516 historias.
+- CLI: `python word_rank.py whip --top 20 [--exact] [--per-1k]`
+- En la GUI: botón **"# Por frecuencia"**. El botón **"▶ Calcular"** con palabras en el filtro
+  hace la otra mitad: **marca** las historias que las contienen y les aplica el ranking por
+  pesos **solo a ellas** (vía `allowed_ids` de `rank_stories`).
+- El filtro es **híbrido**: cuerpo del texto por índice + título/sinopsis/tags por SQL
+  (`meta_matches`), porque el índice solo cubre el cuerpo. AND entre palabras, OR entre lugares.
 - GUI: `ranker_gui.py` — sliders para calibrar los pesos en vivo, filtro por similitud
   (`similarity.py`) y **abre la historia elegida en el lector** (`.venv/bin/python main.py`).
 - `tagger_gui.py` también lanza el lector para leer mientras se etiqueta.
@@ -160,16 +190,28 @@ tail -f /tmp/lector.log
 ```bash
 source .venv/bin/activate
 cd story_classifier
-python ranker.py --top 20     # CLI
-python ranker_gui.py          # GUI de calibración de pesos
-python tagger_gui.py          # GUI de etiquetado
+python ranker.py --top 20              # CLI del ranking por pesos
+python word_rank.py whip --top 20      # ranking por frecuencia de palabra
+python word_rank.py whip --exact --per-1k
+python ranker_gui.py                   # GUI (también en ~/Escritorio/ranking-historias.desktop)
+python tagger_gui.py                   # GUI de etiquetado
+
+# Reconstruir el índice tras agregar historias (~3 min).
+# Escribe a .tmp y renombra al final: si se corta, el índice viejo sigue usable.
+python build_index.py
 ```
 
 ## Pendientes
 - [ ] Tests de integración para la UI
 - [ ] Soporte para .pdf y .epub
 - [ ] Quitar logging de debug antes de distribución
-- [ ] Commit de la mudanza en ambos repos (borrado ya staged en `machinelearning`)
+- [ ] **En `machinelearning` el borrado de `story_classifier/` sigue staged sin commitear**
+      (decisión del usuario: ahí no se commitea)
+- [ ] Scores del ranking por pesos muy comprimidos en el top — evaluar desempate por valores
+      crudos o pesos asimétricos
+- [ ] 27 historias indexadas sin fila en `stories.db` → salen con título `?`
+- [ ] El repo es **público** en GitHub y `scraper.py` deja ver el sitio de origen del corpus —
+      evaluar pasarlo a privado (`gh repo edit svigo/lector --visibility private`)
 
 ## Notas
 - `proximity_search`: gap = fin del primero al inicio del segundo, estrictamente < n. Navegación por pares (label='a'), highlights muestran ambos términos.
@@ -178,7 +220,9 @@ python tagger_gui.py          # GUI de etiquetado
 - Teclas globales vía `eventFilter` en `QApplication` (instalado en `__init__`). `_scroll_lines` usa `fontMetrics().height()` como paso. `_toggle_autoscroll_pause` devuelve `True` solo si el auto-scroll está activo (botón checked), distinguiendo pausa (timer parado, botón sigue checked) de desactivación (`Ctrl+Space`).
 - `PIXABAY_API_KEY` en `~/.profile` (no en `.bashrc` que tiene guard de shell interactivo).
 - Fix: los botones ◀/▶ antes navegaban matches viejos aunque el término de búsqueda hubiera cambiado (solo Enter re-buscaba). Ahora `SearchBar._handle_nav(direction)` centraliza la lógica de "¿cambió el término? buscar : navegar" para Enter y ambos botones.
-- Lanzador en `~/Escritorio/lector.desktop`.
+- Lanzadores en `~/Escritorio/lector.desktop` y `~/Escritorio/ranking-historias.desktop`.
+- 27 historias están indexadas pero no en `stories.db` (aparecen con título `?` en el ranking
+  por frecuencia, que sale del índice y no del scrapeo).
 - `reflow_stories.py` ya procesó 10543 historias en `~/corpus-historias/stories/resto/`.
 - **Mudanza (2026-08-02)**: `story_classifier/` se movió desde `~/proyectos/machinelearning/`
   a este proyecto — el corpus es lo que el lector lee y en machinelearning (misceláneo) era

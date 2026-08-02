@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from ranker import rank_stories, percentile_rank
 import similarity
+import word_rank
 
 
 SIGNALS = [
@@ -43,7 +44,7 @@ def open_story(story_id, db_path, stories_dir):
     subprocess.Popen([f'{lector}/.venv/bin/python', f'{lector}/main.py', filepath])
 
 
-def build_gui(db_path, stories_dir, cache_path):
+def build_gui(db_path, stories_dir, cache_path, index_db):
     root = tk.Tk()
     root.title("Calibrador de Ranking")
     sim_cache = {'data': None}  # se carga lazy al pedir similares
@@ -83,7 +84,14 @@ def build_gui(db_path, stories_dir, cache_path):
 
     ttk.Label(ctrl_frame, text="Filtrar palabras:").pack(side='left')
     filter_var = tk.StringVar(value="")
-    ttk.Entry(ctrl_frame, textvariable=filter_var, width=24).pack(side='left', padx=(4, 16))
+    ttk.Entry(ctrl_frame, textvariable=filter_var, width=24).pack(side='left', padx=(4, 4))
+
+    exact_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(ctrl_frame, text="exacta", variable=exact_var).pack(side='left')
+
+    density_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(ctrl_frame, text="por densidad",
+                    variable=density_var).pack(side='left', padx=(4, 16))
 
     status_var = tk.StringVar(value="")
     btn = ttk.Button(ctrl_frame, text="▶  Calcular",
@@ -138,12 +146,15 @@ def build_gui(db_path, stories_dir, cache_path):
     iid_to_sid = {}
     text_cache = {}  # filename -> contenido en minúsculas, cacheado por sesión
 
-    def get_filtered_ids(words):
-        """IDs de historias donde TODAS las palabras aparecen en título,
-        sinopsis, tags o texto completo del archivo (AND)."""
+    def meta_matches(word, exact):
+        """IDs cuyo título, sinopsis o tags contienen la palabra.
+
+        El índice invertido solo cubre el cuerpo del texto, así que los
+        metadatos se consultan aparte y se unen al resultado.
+        """
         conn = sqlite3.connect(db_path)
         rows = conn.execute('''
-            SELECT s.id, s.filename, s.title, s.synopsis,
+            SELECT s.id, s.title, s.synopsis,
                    COALESCE(GROUP_CONCAT(DISTINCT t.tag), '') AS tags,
                    COALESCE(GROUP_CONCAT(DISTINCT ut.name), '') AS user_tags
             FROM stories s
@@ -155,32 +166,31 @@ def build_gui(db_path, stories_dir, cache_path):
         ''').fetchall()
         conn.close()
 
-        matched = []
-        total = len(rows)
-        for i, (sid, filename, title, synopsis, tags, user_tags) in enumerate(rows):
+        pattern = re.compile(r'\b' + re.escape(word) + r'\b') if exact else None
+        matched = set()
+        for sid, title, synopsis, tags, user_tags in rows:
             meta = ' '.join(filter(None, [title, synopsis, tags, user_tags])).lower()
-            ok = True
-            for w in words:
-                if w in meta:
-                    continue
-                content = text_cache.get(filename)
-                if content is None:
-                    filepath = os.path.join(stories_dir, filename or '')
-                    try:
-                        with open(filepath, encoding='utf-8', errors='ignore') as f:
-                            content = f.read().lower()
-                    except OSError:
-                        content = ''
-                    text_cache[filename] = content
-                if w not in content:
-                    ok = False
-                    break
-            if ok:
-                matched.append(sid)
-            if i % 500 == 0:
-                status_var.set(f"Filtrando... {i}/{total}")
-                root.update()
+            if pattern.search(meta) if exact else (word in meta):
+                matched.add(sid)
         return matched
+
+    def get_filtered_ids(words, exact=False):
+        """IDs donde TODAS las palabras aparecen en el cuerpo, título,
+        sinopsis o tags (AND entre palabras, OR entre esos lugares)."""
+        result = None
+        for w in words:
+            ids = word_rank.stories_with_words(index_db, [w], exact) | meta_matches(w, exact)
+            result = ids if result is None else (result & ids)
+            if not result:
+                break
+        return sorted(result or [])
+
+    def set_headers(mode):
+        """Reusa las columnas numéricas para el modo frecuencia."""
+        freq = {'score': 'Veces', 'rating': '/1000 pal', 'eng': '', 'shelves': '', 'qual': ''}
+        for col in cols:
+            text = freq[col] if (mode == 'freq' and col in freq) else headers[col]
+            tree.heading(col, text=text)
 
     def run_ranking():
         weights = {k: v.get() for k, v in weight_vars.items()}
@@ -189,7 +199,8 @@ def build_gui(db_path, stories_dir, cache_path):
         root.update()
         try:
             words = [w.lower() for w in filter_var.get().split() if w]
-            allowed_ids = get_filtered_ids(words) if words else None
+            allowed_ids = get_filtered_ids(words, exact_var.get()) if words else None
+            set_headers('rank')
             results = rank_stories(db_path, weights, top_var.get(), allowed_ids)
             for item in tree.get_children():
                 tree.delete(item)
@@ -207,60 +218,48 @@ def build_gui(db_path, stories_dir, cache_path):
                     s['author'],
                 ))
                 iid_to_sid[iid] = s['id']
-            status_var.set(f"{len(results)} historias  |  doble clic para abrir")
+            filtro = f"  (filtradas por {' + '.join(words)})" if words else ""
+            status_var.set(f"{len(results)} historias{filtro}  |  doble clic para abrir")
         except Exception as e:
             status_var.set(f"Error: {e}")
         finally:
             btn.state(['!disabled'])
 
     def run_frequency():
-        words = filter_var.get().split()
+        words = [w.lower() for w in filter_var.get().split() if w]
         if not words:
-            status_var.set("Escribí una palabra en el filtro")
+            status_var.set("Escribí una o más palabras en el filtro")
             return
-        word = words[0].lower()
-        pattern = re.compile(r'\b' + re.escape(word) + r'\b')
 
         status_var.set("Contando ocurrencias...")
         btn_freq.state(['disabled'])
         root.update()
         try:
+            results = word_rank.rank_by_words(
+                index_db, words, exact_var.get(), top_var.get(), density_var.get())
+
             conn = sqlite3.connect(db_path)
-            rows = conn.execute('SELECT id, filename, title, author FROM stories').fetchall()
+            meta = {r[0]: (r[1], r[2]) for r in
+                    conn.execute('SELECT id, title, author FROM stories')}
             conn.close()
 
-            counted = []
-            total = len(rows)
-            for i, (sid, filename, title, author) in enumerate(rows):
-                content = text_cache.get(filename)
-                if content is None:
-                    filepath = os.path.join(stories_dir, filename or '')
-                    try:
-                        with open(filepath, encoding='utf-8', errors='ignore') as f:
-                            content = f.read().lower()
-                    except OSError:
-                        content = ''
-                    text_cache[filename] = content
-                count = len(pattern.findall(content))
-                if count > 0:
-                    counted.append((sid, title or '?', author or '?', count))
-                if i % 500 == 0:
-                    status_var.set(f"Contando... {i}/{total}")
-                    root.update()
-
-            counted.sort(key=lambda x: x[3], reverse=True)
-            counted = counted[:top_var.get()]
-
+            set_headers('freq')
             for item in tree.get_children():
                 tree.delete(item)
             iid_to_sid.clear()
-            for rank, (sid, title, author, count) in enumerate(counted, start=1):
-                tag = 'odd' if rank % 2 else ''
+            for r in results:
+                title, author = meta.get(r['id'], ('?', '?'))
+                tag = 'odd' if r['rank'] % 2 else ''
                 iid = tree.insert('', 'end', tags=(tag,), values=(
-                    rank, count, '', '', '', '', title, author,
+                    r['rank'], r['hits'], f"{r['per_1k']:.2f}", '', '', '',
+                    title or '?', author or '?',
                 ))
-                iid_to_sid[iid] = sid
-            status_var.set(f'{len(counted)} historias con "{word}"  |  ordenadas por frecuencia')
+                iid_to_sid[iid] = r['id']
+
+            modo = 'exacta' if exact_var.get() else 'con variantes'
+            orden = 'por densidad' if density_var.get() else 'por veces'
+            status_var.set(f'{len(results)} historias con {" + ".join(words)} '
+                           f'({modo}, {orden})')
         except Exception as e:
             status_var.set(f"Error: {e}")
         finally:
@@ -550,8 +549,10 @@ def main():
                    help='Carpeta con los archivos .txt')
     p.add_argument('--cache', default=os.path.expanduser('~/corpus-historias/similarity_cache.pkl'),
                    help='Caché de similitud (similarity.py --build)')
+    p.add_argument('--index', default=word_rank.INDEX_DB,
+                   help='Índice invertido (build_index.py)')
     args = p.parse_args()
-    build_gui(args.db, args.stories_dir, args.cache)
+    build_gui(args.db, args.stories_dir, args.cache, args.index)
 
 
 if __name__ == '__main__':
