@@ -1,4 +1,5 @@
 import logging
+import subprocess
 import requests
 from spellchecker import SpellChecker
 from typing import List
@@ -47,13 +48,32 @@ def _translate_lingva(word: str) -> str:
         return ""
 
 
+def _translate_apertium(word: str) -> str:
+    try:
+        r = subprocess.run(
+            ["apertium", "eng-spa"],
+            input=word, capture_output=True, text=True, timeout=5,
+        )
+        text = r.stdout.strip()
+        if not text or text.startswith("*"):
+            return ""
+        return text
+    except Exception as e:
+        log.error("Apertium: error traduciendo '%s': %s", word, e)
+        return ""
+
+
 def translate_en_es(word: str) -> str:
-    """Traduce probando MyMemory primero; si no hay resultado usable, cae a Lingva."""
+    """Traduce probando MyMemory primero, luego Lingva, y si ambos fallan cae a Apertium (offline)."""
     translation = _translate_mymemory(word)
     if translation:
         return translation
     log.debug("MyMemory sin resultado usable para '%s', probando Lingva", word)
     translation = _translate_lingva(word)
+    if translation:
+        return translation
+    log.debug("Lingva sin resultado usable para '%s', probando Apertium (offline)", word)
+    translation = _translate_apertium(word)
     if translation:
         return translation
     return "(error al traducir)"
