@@ -16,7 +16,7 @@ lector/
 ├── reflow_stories.py        # script batch para corregir hard-wraps en .txt
 ├── src/
 │   ├── search.py            # 4 modos de búsqueda (sin Qt)
-│   ├── translation.py       # MyMemory + Pixabay + Wikipedia fallback + spell correction
+│   ├── translation.py       # MyMemory + Lingva + Apertium (offline) + Pixabay + Wikipedia fallback + spell correction
 │   └── viewer.py            # UI completa PyQt6
 ├── tests/
 │   ├── conftest.py
@@ -52,6 +52,8 @@ cualquier directorio.
 ## Stack técnico
 - **Python 3.10+** + **PyQt6** — UI de escritorio, estilo gedit
 - **MyMemory API** — traducción EN→ES, gratuita sin API key
+- **Lingva** — fallback de traducción (mirror de Google Translate, sin API key)
+- **Apertium** (`apertium apertium-en-es`, paquete del sistema vía apt) — fallback offline de traducción cuando MyMemory y Lingva fallan; vocabulario limitado pero no depende de red
 - **Pixabay API** — imágenes (requiere `PIXABAY_API_KEY` en `~/.profile`)
 - **Wikipedia API** — fallback de imágenes cuando Pixabay da 0 resultados
 - **pyspellchecker** — corrección de typos antes de traducir y buscar imágenes
@@ -91,7 +93,7 @@ cualquier directorio.
 - Click derecho traduce directo (sin menú, ya no hay más de una opción)
 - Si hay una frase seleccionada, traduce la selección completa; si no, la palabra bajo el cursor
 - Spell correction antes de traducir e imágenes (solo aplica a palabra suelta; en frases no encuentra corrección y devuelve la frase intacta)
-- Traducción: MyMemory primero, si no da resultado usable cae a Lingva (mirror de Google Translate, sin API key)
+- Traducción: MyMemory primero, si no da resultado usable cae a Lingva (mirror de Google Translate, sin API key), y si ambos fallan cae a Apertium (`eng-spa`, motor offline instalado vía apt, cubre vocabulario limitado pero no depende de red)
 - Slang: definición de Urban Dictionary (sin API key), se muestra solo si hay resultado — útil para términos que MyMemory/Lingva no manejan bien
 - Popup: palabra original, nota "typo corregido → X" si hubo corrección, traducción ES aparece apenas llega (no espera al resto), definición de slang después, 3 imágenes al final (lo más lento)
 - Carga asíncrona (QThread) — `_LoadingWorker` emite en orden `translated` → `slang_done` → `images_done`, cada uno actualiza su parte de la UI sin bloquear a los demás
