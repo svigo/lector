@@ -8,6 +8,7 @@ Visor de textos orientado a la lectura (no edición), con búsqueda avanzada, tr
 - 🟢 `story_classifier/` incorporado desde `machinelearning` (2026-08-02), corriendo en el
   mismo venv que el visor
 - 🟢 Ranking por frecuencia de palabras sobre índice invertido — 47 tests pasando
+- 🟢 Transmitir a la tele (Chromecast / Antel Box) — probado con el Antel Box2.0 (2026-11-16)
 
 ## Arquitectura
 ```
@@ -17,6 +18,7 @@ lector/
 ├── src/
 │   ├── search.py            # 4 modos de búsqueda (sin Qt)
 │   ├── translation.py       # MyMemory + Lingva + Apertium (offline) + Pixabay + Wikipedia fallback + spell correction
+│   ├── cast.py              # transmisión a Chromecast: servidor web + DashCast (sin Qt)
 │   └── viewer.py            # UI completa PyQt6
 ├── tests/
 │   ├── conftest.py
@@ -61,6 +63,7 @@ cualquier directorio.
 - **numpy / scipy / scikit-learn / pandas** — pipeline del corpus (TF-IDF, KMeans, similitud)
 - **snowballstemmer** — stemming para el índice de palabras y el tagger
 - **beautifulsoup4** — parseo HTML del scraper
+- **pychromecast** — descubrir Chromecast/Android TV y abrir la página del lector con DashCast
 - **Tkinter** — GUIs del pipeline (`ranker_gui`, `tagger_gui`); el visor es PyQt6
 
 ## Funcionalidades implementadas
@@ -104,6 +107,14 @@ cualquier directorio.
 - Al activar aparece slider de velocidad 1–10
 - `+` / `-` ajustan velocidad (solo cuando activo)
 - Se detiene al llegar al final
+
+### Transmitir a la tele (botón "📺 Transmitir")
+- Busca dispositivos Cast en la red (~6 s, en hilo aparte) y muestra un menú para elegir
+- Probado con el **Antel Box2.0** (ZTE, Android TV 12, `192.168.1.9`) — aparece como Chromecast
+- La tele muestra el texto grande en fondo oscuro y sigue scroll, auto-scroll y resaltados de búsqueda
+- "⏹ Dejar de transmitir" o cerrar la ventana cierran la app en la tele
+- El Antel Box cierra DashCast cada algunos minutos (inactividad): el lector lo detecta y
+  la **reabre sola** (corte de ~5 s). Si en la tele se abre otra app, el botón vuelve a "📺 Transmitir"
 
 ### Teclas globales (foco-agnósticas)
 Implementadas con un `eventFilter` a nivel de `QApplication` (guardado con `isActiveWindow()` para no interferir con diálogos modales):
@@ -205,6 +216,7 @@ python build_index.py
 
 ## Pendientes
 - [ ] Tests de integración para la UI
+- [ ] Cast: falta probar en uso real que al abrir otra app en la tele (Netflix) el botón vuelva a "📺 Transmitir" (el Antel Box rechazó abrir el Default Media Receiver en la prueba automática)
 - [ ] Soporte para .pdf y .epub
 - [ ] Quitar logging de debug antes de distribución
 - [ ] **En `machinelearning` el borrado de `story_classifier/` sigue staged sin commitear**
@@ -216,6 +228,22 @@ python build_index.py
       evaluar pasarlo a privado (`gh repo edit svigo/lector --visibility private`)
 
 ## Notas
+- **Cast**: Chrome hace mirroring (video) con un protocolo cerrado; acá en cambio el lector sirve
+  una página en `http://<IP-del-PC>:8765/` (`http.server`, hilo daemon) y la abre en la tele con
+  **DashCast** (receptor no oficial, app id `84912283`, incluido en pychromecast). La página consulta
+  `/state` cada 250 ms (versión + **párrafo de arriba + fracción 0..1** de ese párrafo) y `/text`
+  solo cuando cambia la versión (texto + marcas). La fracción sale de `blockBoundingRect` vs. el valor
+  del scrollbar, así cambia con cada píxel (antes se mandaba el offset del primer carácter visible y
+  avanzaba de a una línea entera → saltos en el auto-scroll). Los párrafos coinciden porque ambos
+  lados parten por `\n`. En la tele el scroll sigue al objetivo con lerp 0.06 por frame
+  (`requestAnimationFrame`); saltos > 1 pantalla van directo. Al apagar el servidor la página queda
+  viva en la tele: hay que llamar `cast.quit_app()` para cerrarla.
+- **Vigilancia de la app**: `CastSession.new_cast_status` se registra en
+  `socket_client.receiver_controller.register_status_listener` (en pychromecast 14 no está en
+  `Chromecast`). `app_id` None/backdrop → reabre DashCast; otra app → `on_ended` (llega a Qt por una
+  señal de `_CastEnded`). Tras cada apertura hay **15 s de gracia**: la tele manda varios status
+  "sin app" seguidos y DashCast tarda ~5 s en abrir — sin la gracia se gastaban los 3 reintentos
+  (máx. 3 cada 2 min) en segundos.
 - `proximity_search`: gap = fin del primero al inicio del segundo, estrictamente < n. Navegación por pares (label='a'), highlights muestran ambos términos.
 - `_nav_matches` separa los matches navegables de los highlights (relevante en Proximidad).
 - `setExtraSelections` para highlights — no corrompe el documento al limpiar.

@@ -1,11 +1,12 @@
 import os
 import re
+import threading
 from PyQt6.QtWidgets import (
     QMainWindow, QTextEdit, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QLabel, QComboBox, QSpinBox,
-    QSlider, QDialog, QFileDialog, QSizePolicy,
+    QSlider, QDialog, QFileDialog, QSizePolicy, QMenu, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, QObject, QEvent, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, QObject, QEvent, QPoint, pyqtSignal
 from PyQt6.QtGui import (
     QTextCharFormat, QColor, QTextCursor, QFont,
     QKeySequence, QShortcut, QPainter, QPixmap,
@@ -13,6 +14,7 @@ from PyQt6.QtGui import (
 
 from src.search import simple_search, fuzzy_search, or_search, proximity_search
 from src.translation import translate_en_es, get_images, correct_word, get_slang_definition
+from src import cast
 
 # Highlight colors
 COLORS = {
@@ -339,6 +341,25 @@ def _reflow(text: str) -> str:
     return text.replace('\x00', '\n\n')
 
 
+class _CastEnded(QObject):
+    """Pasa el aviso de 'la tele dejó de transmitir' al hilo de UI."""
+    ended = pyqtSignal()
+
+
+class _Background(QObject):
+    """Corre una función bloqueante en un hilo y avisa el resultado en el hilo de UI."""
+    done = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def run(self, fn):
+        def target():
+            try:
+                self.done.emit(fn())
+            except Exception as e:
+                self.failed.emit(str(e))
+        threading.Thread(target=target, daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -352,6 +373,10 @@ class LectorWindow(QMainWindow):
         self._pixabay_key = os.environ.get('PIXABAY_API_KEY', '')
         self._autoscroll_timer = QTimer()
         self._autoscroll_timer.timeout.connect(self._do_autoscroll)
+        self._cast_session = None
+        self._cast_bg = None
+        self._cast_ended = _CastEnded()
+        self._cast_ended.ended.connect(self._on_cast_ended)
         self._setup_ui()
         self._setup_shortcuts()
         from PyQt6.QtWidgets import QApplication
@@ -385,6 +410,8 @@ class LectorWindow(QMainWindow):
         self._style_text_edit()
         content.addWidget(self.text_edit)
 
+        self.text_edit.verticalScrollBar().valueChanged.connect(self._cast_sync_top)
+
         self.marker_bar = MarkerBar(self.text_edit)
         content.addWidget(self.marker_bar)
 
@@ -411,6 +438,10 @@ class LectorWindow(QMainWindow):
         layout.addWidget(btn_open)
 
         layout.addStretch()
+
+        self.btn_cast = QPushButton('📺 Transmitir')
+        self.btn_cast.clicked.connect(self._on_cast_clicked)
+        layout.addWidget(self.btn_cast)
 
         self.btn_autoscroll = QPushButton('▶ Auto-scroll')
         self.btn_autoscroll.setCheckable(True)
@@ -542,6 +573,7 @@ class LectorWindow(QMainWindow):
         cursor.setBlockFormat(block_fmt)
         cursor.setPosition(0)
         self.text_edit.setTextCursor(cursor)
+        self._cast_sync_content()
 
     # ------------------------------------------------------------------
     # Search
@@ -557,6 +589,7 @@ class LectorWindow(QMainWindow):
         self._matches = []
         self._nav_matches = []
         self._current_idx = -1
+        self._cast_sync_content()
 
     def _on_search(self, params: dict):
         text = self.text_edit.toPlainText()
@@ -603,6 +636,7 @@ class LectorWindow(QMainWindow):
             sel.format.setBackground(color)
             selections.append(sel)
         self.text_edit.setExtraSelections(selections)
+        self._cast_sync_content()
 
     def _scroll_to(self, idx: int):
         if not self._nav_matches or not (0 <= idx < len(self._nav_matches)):
@@ -672,3 +706,86 @@ class LectorWindow(QMainWindow):
             self.btn_autoscroll.setText('▶ Iniciar')
         else:
             sb.setValue(new_val)
+
+    # ------------------------------------------------------------------
+    # Transmitir a Chromecast / Android TV
+    # ------------------------------------------------------------------
+
+    def _run_bg(self, fn, on_done, on_fail):
+        self._cast_bg = _Background()
+        self._cast_bg.done.connect(on_done)
+        self._cast_bg.failed.connect(on_fail)
+        self._cast_bg.run(fn)
+
+    def _on_cast_clicked(self):
+        if self._cast_session:
+            self._cast_session.stop()
+            self._cast_session = None
+            self.btn_cast.setText('📺 Transmitir')
+            return
+        self.btn_cast.setEnabled(False)
+        self.btn_cast.setText('Buscando…')
+        self._run_bg(cast.discover, self._on_cast_devices, self._on_cast_error)
+
+    def _on_cast_devices(self, names):
+        self.btn_cast.setEnabled(True)
+        self.btn_cast.setText('📺 Transmitir')
+        if not names:
+            QMessageBox.information(self, 'Transmitir', 'No se encontraron pantallas en la red.')
+            return
+        menu = QMenu(self)
+        for name in names:
+            menu.addAction(name, lambda n=name: self._start_cast(n))
+        menu.exec(self.btn_cast.mapToGlobal(QPoint(0, self.btn_cast.height())))
+
+    def _start_cast(self, name: str):
+        self.btn_cast.setEnabled(False)
+        self.btn_cast.setText('Conectando…')
+        session = cast.CastSession(on_ended=self._cast_ended.ended.emit)
+        self._cast_session = session
+        self._cast_sync_content()
+        self._cast_sync_top()
+
+        def done(_):
+            self.btn_cast.setEnabled(True)
+            self.btn_cast.setText(f'⏹ Dejar de transmitir ({name})')
+
+        def fail(msg):
+            session.stop()
+            self._cast_session = None
+            self._on_cast_error(msg)
+
+        self._run_bg(lambda: session.start(name), done, fail)
+
+    def _on_cast_ended(self):
+        """En la tele se abrió otra app: cortar la transmisión de este lado."""
+        if self._cast_session:
+            self._cast_session.stop()
+            self._cast_session = None
+        self.btn_cast.setEnabled(True)
+        self.btn_cast.setText('📺 Transmitir')
+
+    def _on_cast_error(self, msg: str):
+        self.btn_cast.setEnabled(True)
+        self.btn_cast.setText('📺 Transmitir')
+        QMessageBox.warning(self, 'Transmitir', f'No se pudo transmitir:\n{msg}')
+
+    def _cast_sync_content(self):
+        if not self._cast_session:
+            return
+        nav_start = self._nav_matches[self._current_idx].start if 0 <= self._current_idx < len(self._nav_matches) else -1
+        marks = [(m.start, m.end, 'current' if m.start == nav_start else m.label) for m in self._matches]
+        self._cast_session.set_content(self.text_edit.toPlainText(), marks)
+
+    def _cast_sync_top(self, *_):
+        if self._cast_session:
+            block = self.text_edit.cursorForPosition(QPoint(0, 0)).block()
+            rect = self.text_edit.document().documentLayout().blockBoundingRect(block)
+            y = self.text_edit.verticalScrollBar().value()
+            frac = (y - rect.top()) / rect.height() if rect.height() else 0.0
+            self._cast_session.set_top(block.blockNumber(), max(0.0, min(1.0, frac)))
+
+    def closeEvent(self, event):
+        if self._cast_session:
+            self._cast_session.stop()
+        super().closeEvent(event)
